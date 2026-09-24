@@ -3,11 +3,13 @@ using System.Text;
 using System.Text.RegularExpressions;
 using AngleSharp.Dom;
 using AngleSharp.Html.Parser;
+using Dapper;
+using Npgsql;
 using TestJob.Api.Models;
 
 namespace TestJob.Api.Services;
 
-public sealed class ProcessingService
+public sealed class ProcessingService(NpgsqlDataSource dataSource)
 {
     private static readonly UTF8Encoding Utf8 = new(false, true);
     private static readonly Regex EmailRegex = new(
@@ -77,6 +79,29 @@ public sealed class ProcessingService
         catch (DecoderFallbackException)
         {
             throw new ProcessingException("INVALID_PLAIN_TEXT_UTF8", "Расшифрованные данные не являются текстом UTF-8.");
+        }
+
+        // Сохраняем только после успешной обработки всех входных данных.
+        // Одна транзакция исключает частичную запись элементов запроса.
+        if (elements.Length > 0)
+        {
+            await using var connection = await dataSource.OpenConnectionAsync(cancellationToken);
+            await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+            foreach (var element in elements)
+            {
+                var command = new CommandDefinition(
+                    "INSERT INTO elements (attribute_value, html) VALUES (@AttributeValue, @Html)",
+                    new
+                    {
+                        AttributeValue = element.GetAttribute(request.Attribute!) ?? string.Empty,
+                        Html = element.OuterHtml
+                    },
+                    transaction: transaction,
+                    cancellationToken: cancellationToken);
+                await connection.ExecuteAsync(command);
+            }
+
+            await transaction.CommitAsync(cancellationToken);
         }
 
         return new ProcessResponse

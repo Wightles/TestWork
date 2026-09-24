@@ -1,0 +1,81 @@
+name: testjob
+
+services:
+  api:
+    image: mcr.microsoft.com/dotnet/sdk:10.0
+    working_dir: /workspace/TestJob.Api
+    environment:
+      ASPNETCORE_URLS: http://0.0.0.0:8090
+      DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+      DOTNET_NOLOGO: "1"
+      ConnectionStrings__Postgres: Host=postgres;Port=5432;Database=testjob;Username=testjob;Password=testjob_password
+    ports:
+      - "127.0.0.1:8090:8090"
+    volumes:
+      - ./src:/workspace
+      - api_bin:/workspace/TestJob.Api/bin
+      - api_obj:/workspace/TestJob.Api/obj
+      - nuget_cache:/root/.nuget/packages
+    command:
+      - /bin/sh
+      - -c
+      - dotnet build -c Release -o /app && exec dotnet /app/TestJob.Api.dll
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://localhost:8090/api/swagger/v1/swagger.json"]
+      interval: 10s
+      timeout: 5s
+      start_period: 120s
+      retries: 12
+
+  postgres:
+    image: postgres:18
+    environment:
+      POSTGRES_DB: testjob
+      POSTGRES_USER: testjob
+      POSTGRES_PASSWORD: testjob_password
+      POSTGRES_INITDB_ARGS: --encoding=UTF8
+    volumes:
+      # PostgreSQL 18 хранит данные в подкаталоге 18/docker.
+      - postgres_data:/var/lib/postgresql
+      - ./docker/postgres/init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U testjob -d testjob"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  pgadmin:
+    image: dpage/pgadmin4:9.18
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@example.com
+      PGADMIN_DEFAULT_PASSWORD: testjob_admin
+      PGADMIN_CONFIG_SERVER_MODE: "False"
+      PGADMIN_CONFIG_MASTER_PASSWORD_REQUIRED: "False"
+      PGADMIN_DISABLE_POSTFIX: "1"
+      PGADMIN_REPLACE_SERVERS_ON_STARTUP: "True"
+      PGPASS_FILE: /pgpass
+    ports:
+      - "127.0.0.1:8080:80"
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+      - ./docker/pgadmin/servers.json:/pgadmin4/servers.json:ro
+      - ./docker/pgadmin/pgpass:/pgpass:ro
+    healthcheck:
+      test: ["CMD", "/venv/bin/python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1/misc/ping', timeout=5)"]
+      interval: 10s
+      timeout: 10s
+      start_period: 60s
+      retries: 12
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
+  pgadmin_data:
+  api_bin:
+  api_obj:
+  nuget_cache:

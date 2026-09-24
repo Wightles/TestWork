@@ -1,6 +1,7 @@
 using System.Text.Json;
 using FluentValidation;
 using Microsoft.AspNetCore.Mvc;
+using Npgsql;
 using TestJob.Api.Models;
 using TestJob.Api.Services;
 
@@ -19,6 +20,9 @@ builder.Services.Configure<ApiBehaviorOptions>(options =>
 });
 builder.Services.AddScoped<IValidator<ProcessRequest>, ProcessRequestValidator>();
 builder.Services.AddScoped<ProcessingService>();
+builder.Services.AddSingleton(_ => NpgsqlDataSource.Create(
+    builder.Configuration.GetConnectionString("Postgres")
+    ?? throw new InvalidOperationException("Задайте строку подключения ConnectionStrings__Postgres.")));
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 

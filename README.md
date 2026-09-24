@@ -2,12 +2,12 @@
 
 Решение [тестового задания](https://github.com/adm-devsec/TestJob).
 
-Планируемый стек: ASP.NET Core 10, FluentValidation, AngleSharp, Dapper,
+Стек: ASP.NET Core 10, FluentValidation, AngleSharp, Dapper,
 PostgreSQL 18 и Docker Compose.
 
-API будет принимать JSON, декодировать URL и HTML из Base64, извлекать
-элементы по CSS-селектору и email-адреса, сохранять элементы в PostgreSQL
-и расшифровывать текст с помощью AES-256 ECB без padding.
+API принимает JSON, декодирует URL и HTML из Base64, извлекает
+элементы по CSS-селектору и email-адреса, сохраняет элементы в PostgreSQL
+и расшифровывает текст с помощью AES-256 ECB без padding.
 
 ## Структура
 
@@ -21,15 +21,15 @@ docker/
 └── pgadmin/        # Настройка подключения к БД
 ```
 
-Файлы `.gitkeep` сохраняют пока пустые папки в Git.
-Корневой `compose.yml` будет добавлен на этапе настройки Docker.
+В корне находится `compose.yml`, в `scripts/` — HTTP-проверки API и сохранения в БД.
 
 ## Этапы
 
 1. Подготовить структуру проекта — выполнено.
 2. Создать ASP.NET Core проект, модели, валидацию, контроллер и Swagger — выполнено.
 3. Реализовать обработку HTML, поиск email, дешифрование и обработку ошибок — выполнено.
-4. Добавить сохранение через Dapper и Docker Compose с PostgreSQL и pgAdmin.
+4. Добавить сохранение через Dapper и Docker Compose с PostgreSQL и pgAdmin — код готов,
+   запуск Compose требует проверки после восстановления Docker.
 5. Проверить оба входных примера и некорректные запросы, сохранить фактические
    ответы в `json_result_1.txt` и `json_result_2.txt`, описать запуск.
 
@@ -45,7 +45,8 @@ JSON использует имена полей в snake_case и формати�
 URL и HTML, использует AngleSharp для выбора элементов, ищет email с помощью
 скомпилированного регулярного выражения и расшифровывает AES-256 ECB с `PaddingMode.None`.
 Корректный запрос возвращает HTTP 200 с результатом обработки.
-Сохранение в БД и Docker Compose появятся на следующем этапе.
+Элементы сохраняются через Dapper в таблицу `elements` одной транзакцией после
+успешной обработки входных данных. При ошибке вставки транзакция откатывается.
 Каждый следующий этап оформляется отдельным коммитом.
 
 ### Правила обработки
@@ -69,29 +70,87 @@ URL и HTML, использует AngleSharp для выбора элемент�
 Контроллер ожидает `ValidateAsync` и `ProcessAsync`, сервис — `ParseDocumentAsync`.
 Токен отмены передаётся в эти вызовы и проверяется при обходе результатов.
 Асинхронность полезна прежде всего при ожидании ввода-вывода: поток может
-обслуживать другие запросы. Асинхронные операции БД добавятся на следующем этапе.
+обслуживать другие запросы. Подключение к БД, начало транзакции, вставки через
+`ExecuteAsync` и `CommitAsync` выполняются асинхронно с токеном отмены запроса.
 Base64, AES, обход DOM и регулярное выражение выполняют вычисления в памяти;
 они остаются синхронными, без искусственного `Task.Run`. У `Regex.Matches` нет
 асинхронного аналога; поиск ограничен таймаутом. Сериализацию ответа выполняет ASP.NET Core.
 
-## Локальный запуск
+## Запуск через Docker Compose
 
-Требуется **.NET SDK 10**.
+Требуется запущенный Docker с Docker Compose. Из корня репозитория:
 
 ```bash
-dotnet restore src/TestJob.Api/TestJob.Api.csproj
+docker compose up -d --wait
+```
+
+Compose описывает три контейнера:
+
+- API: <http://localhost:8090>, Swagger: <http://localhost:8090/api/swagger>.
+- PostgreSQL 18: доступен контейнерам по имени `postgres`, порт БД не публикуется на хост.
+- pgAdmin: <http://localhost:8080>, режим без входа и мастер-пароля.
+  Сервер `TestJob PostgreSQL 18` импортируется автоматически; пароль БД
+  берётся из `.pgpass`, который entrypoint pgAdmin копирует с правами `600`.
+
+API ожидает готовности PostgreSQL. Исходники `src/` монтируются в SDK-контейнер;
+при каждом старте он собирает приложение и запускает его в том же контейнере.
+`bin`, `obj` и кеш NuGet хранятся в отдельных томах, чтобы не смешивать сборки хоста и Linux.
+Первый запуск требует интернета для загрузки образов и пакетов.
+
+Порты API и pgAdmin привязаны к `127.0.0.1`. Фиксированные пароли в Compose и
+`docker/pgadmin/pgpass` предназначены для локального тестового задания.
+
+Просмотр логов и перезапуск API после изменения исходников:
+
+```bash
+docker compose logs --tail=100 api postgres pgadmin
+docker compose restart api
+```
+
+### Данные PostgreSQL
+
+При первом запуске SQL-файл создаёт таблицу `elements`:
+
+| Поле | Тип | Содержание |
+| --- | --- | --- |
+| `id` | `bigint`, identity, primary key | Автоматический идентификатор |
+| `attribute_value` | `text NOT NULL` | Значение атрибута или пустая строка |
+| `html` | `text NOT NULL` | Полный HTML элемента (`OuterHtml`) |
+
+Повторный запрос добавляет новые строки. При отсутствии найденных элементов вставок нет.
+Значения передаются в SQL параметрами. Init-скрипт применяется только при создании
+пустого тома БД; для уже существующей БД изменение файла не является миграцией.
+
+В pgAdmin откройте сервер → Databases → testjob → Schemas → public → Tables → elements.
+Для проверки через терминал:
+
+```bash
+docker compose exec postgres psql -U testjob -d testjob \
+  -c 'SELECT id, attribute_value, html FROM elements ORDER BY id LIMIT 10;'
+```
+
+Данные хранятся в томе `postgres_data`, смонтированном в `/var/lib/postgresql`
+(путь для официального образа PostgreSQL 18). Остановка с сохранением данных:
+
+```bash
+docker compose down
+docker compose up -d --wait
+```
+
+Не добавляйте `-v` к `down`, если данные нужно сохранить: этот флаг удаляет тома.
+
+## Запуск без Docker
+
+Требуются .NET SDK 10, PostgreSQL 18 и созданная БД `testjob`.
+Примените `docker/postgres/init.sql` к этой БД, затем передайте строку подключения.
+Пример для bash/zsh (замените пароль своим):
+
+```bash
+export ConnectionStrings__Postgres='Host=localhost;Port=5432;Database=testjob;Username=testjob;Password=testjob_password'
 dotnet run --project src/TestJob.Api --urls http://localhost:8090
 ```
 
-Если SDK 10 не установлен, из корня проекта можно запустить API через Docker:
-
-```bash
-docker run --rm -p 127.0.0.1:8090:8090 \
-  -v "$PWD:/workspace" -w /workspace \
-  mcr.microsoft.com/dotnet/sdk:10.0 \
-  dotnet run --project src/TestJob.Api --urls http://0.0.0.0:8090
-```
-
+В PowerShell переменная задаётся через `$env:ConnectionStrings__Postgres = '...'`.
 Swagger UI: <http://localhost:8090/api/swagger>.
 Спецификация: <http://localhost:8090/api/swagger/v1/swagger.json>.
 
@@ -111,14 +170,25 @@ curl -i http://localhost:8090/api/process \
 
 ```bash
 python3 scripts/check_api.py
+python3 scripts/check_storage.py
 ```
 
-Скрипт проверяет результат обработки HTML, повторяющиеся email, отсутствие атрибутов,
+Первый скрипт проверяет результат обработки HTML, повторяющиеся email, отсутствие атрибутов,
 AES на независимом примере OpenSSL, некорректные запросы, формат JSON и Swagger.
 Другой адрес можно передать аргументом, например `http://localhost:18090`.
+
+Второй скрипт сверяет строки БД с ответами API: атрибуты, полный HTML, UTF-8,
+передачу кавычек параметрами, автоинкремент, повторные запросы и отсутствие записи
+при ошибках. По умолчанию обращается к БД через `docker compose exec`.
+Для локальной БД можно передать `--base-url` и `--database-url` (URI для `psql`).
+Проверки добавляют тестовые строки; запускайте их на тестовой БД без параллельных запросов.
 
 Проверено на .NET SDK 10.0.100: сборка без ошибок и предупреждений,
 47 HTTP-проверок прошли. Оба исходных примера задания проверены отдельно:
 первый возвращает 238 элементов и 5 email, второй — 9 элементов и 5 email.
 Атрибуты сверены с Python HTMLParser, расшифровка — с OpenSSL.
-Сохранение элементов в PostgreSQL на этом этапе ещё не проверяется.
+На локальном PostgreSQL 18 прошли проверки сохранения и отдельный тест отката
+транзакции при ошибке второго INSERT. После перезапуска БД сохранились все 254 строки.
+`docker compose config --quiet` проходит. Полный запуск трёх контейнеров,
+вход в pgAdmin без пароля и сохранность тома при пересоздании контейнеров пока
+не подтверждены: Docker Desktop в среде проверки не отвечает.
