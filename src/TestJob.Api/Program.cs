@@ -2,6 +2,7 @@ using System.Text.Json;
 using FluentValidation;
 using Microsoft.AspNetCore.Mvc;
 using TestJob.Api.Models;
+using TestJob.Api.Services;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -17,6 +18,7 @@ builder.Services.Configure<ApiBehaviorOptions>(options =>
         ProcessResponse.Error("INVALID_JSON", "Передайте JSON-объект с полями строкового типа."));
 });
 builder.Services.AddScoped<IValidator<ProcessRequest>, ProcessRequestValidator>();
+builder.Services.AddScoped<ProcessingService>();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 

@@ -1,17 +1,22 @@
 using FluentValidation;
 using Microsoft.AspNetCore.Mvc;
 using TestJob.Api.Models;
+using TestJob.Api.Services;
 
 namespace TestJob.Api.Controllers;
 
 [ApiController]
 [Route("api/process")]
-public sealed class ProcessController(IValidator<ProcessRequest> validator) : ControllerBase
+public sealed class ProcessController(
+    IValidator<ProcessRequest> validator,
+    ProcessingService service,
+    ILogger<ProcessController> logger) : ControllerBase
 {
     [HttpPost]
     [Produces("application/json")]
+    [ProducesResponseType<ProcessResponse>(StatusCodes.Status200OK)]
     [ProducesResponseType<ProcessResponse>(StatusCodes.Status400BadRequest)]
-    [ProducesResponseType<ProcessResponse>(StatusCodes.Status501NotImplemented)]
+    [ProducesResponseType<ProcessResponse>(StatusCodes.Status500InternalServerError)]
     public async Task<ActionResult<ProcessResponse>> Process(
         [FromBody] ProcessRequest request, CancellationToken cancellationToken)
     {
@@ -22,8 +27,19 @@ public sealed class ProcessController(IValidator<ProcessRequest> validator) : Co
             return BadRequest(ProcessResponse.Error(error.ErrorCode, error.ErrorMessage));
         }
 
-        // Бизнес-логика будет подключена на следующем этапе.
-        return StatusCode(StatusCodes.Status501NotImplemented,
-            ProcessResponse.Error("NOT_IMPLEMENTED", "Обработка данных пока не реализована."));
+        try
+        {
+            return Ok(await service.ProcessAsync(request, cancellationToken));
+        }
+        catch (ProcessingException exception)
+        {
+            return BadRequest(ProcessResponse.Error(exception.Code, exception.Message));
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            logger.LogError(exception, "Ошибка обработки запроса");
+            return StatusCode(StatusCodes.Status500InternalServerError,
+                ProcessResponse.Error("INTERNAL_ERROR", exception.Message));
+        }
     }
 }
